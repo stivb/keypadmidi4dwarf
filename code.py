@@ -47,6 +47,7 @@
 # cs = digitalio.DigitalInOut(board.GP05)
 # # create the mcp object
 # mcp = MCP.MCP3008(spi, cs)
+#might try different mux however
 #########################################
 
 
