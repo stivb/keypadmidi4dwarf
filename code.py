@@ -52,13 +52,13 @@
 
 
 import board
-import digitalio
 import busio
 
 import terminalio
 import displayio
 from adafruit_display_text import label, wrap_text_to_lines
 from adafruit_st7789 import ST7789
+from digitalio import DigitalInOut, Direction, Pull
 
 from adafruit_datetime import datetime
 from analogio import AnalogIn
@@ -345,6 +345,34 @@ class AnKeyPad:
             if self.callback!=None:
                 self.callback(self.nId, self.notchMap[nearestIdx])
                 
+class JoyStick:
+    def __init__(self, midi, nId, vPin, hPin, btnPin, callback=None):
+        self.midi = midi
+        self.nId = nId
+        self.vAnalog = AnalogIn(vPin)
+        self.hAnalog = AnalogIn(hPin)
+        self.switch = DigitalInOut(btnPin)
+        self.switch.direction = Direction.INPUT
+        self.switch.pull = Pull.UP
+        self.callback = callback
+        self.lastChecked = time.monotonic()
+        
+    def get_voltage(self, voltage):
+        return int((voltage * 127) / 65536)
+        
+    def check(self):
+        now = time.monotonic()
+        if (now-self.lastChecked>.2):
+            v = self.get_voltage(self.vAnalog.value)
+            h = self.get_voltage(self.hAnalog.value)
+            b = self.switch.value
+            print (v,h,b)
+            self.lastChecked = now
+            
+        
+        
+
+
 class MidiReader:
     
     global monitor
@@ -420,11 +448,12 @@ class Settings:
         self.snapshot=0
         self.masterkey = dict(channel=0, nav=1,cc=2,tempo=3)
         self.midiChn = dict(channel = Setting(0,0,15,1))
-        self.nav = dict(board = Setting(0,0,15,1), snapshot = Setting(0,0,15,1))
-        self.cc =  dict(ccnum = Setting(0,0,127,1), ccval = Setting(0,0,127,1))
-        self.tempo = dict(bpm = Setting(120,80,160,5), bpb = Setting(1,1,8,1))
+        self.nav = dict(snapshot = Setting(0,0,15,1),board = Setting(0,0,15,1))
+        self.cc =  dict( ccnum = Setting(0,0,127,1), ccval = Setting(0,0,127,1))
+        self.tempo = dict(bpb = Setting(1,1,8,1), bpm = Setting(120,80,160,5) )
         self.masterlist = [self.midiChn,self.nav,self.cc, self.tempo]
         self.cursor = [0,0]
+        print(self.nav.keys())
         
     def nextPage(self):
         if self.cursor[self.PAGE]==len(self.masterlist):
@@ -467,10 +496,10 @@ class Settings:
         return self.masterlist[pgNum].keys
     
     def getPageItemValue(self,pgNum,itemName):
-        return self.masterlist[pgNum][itemName]
+        return self.masterlist[pgNum][itemName].val
     
     def setPageItemValue(self,pgNum,itemName,itemValue):
-        self.masterlist[pgNum][itemName] = itemValue
+        self.masterlist[pgNum][itemName].val = itemValue
         
     def findPage(self,itemName):
         for i in range(len(self.masterlist)):
@@ -487,7 +516,7 @@ class Settings:
     def setItemValue(self,itemName):
         pgNum = findPage(itemName)
         if pgNum>-1:
-            self.masterlist[findPage(itemName)][itemName] = itemValue
+            self.masterlist[findPage(itemName)][itemName].val = itemValue
             
     def incrementCurrItem(self):
         self.changeVal(1)
@@ -496,6 +525,7 @@ class Settings:
         self.changeVal(-1)
         
     def changeVal(self, amt):
+        pageDict = self.masterlist[self.cursor[self.PAGE]]
         key = self.getKeyFromPos()
         if amt>0:pageDict[key].inc()
         else:pageDict[key].dec()
@@ -510,11 +540,19 @@ class Settings:
         return key
     
     def enactState(self):
+        global midi1,midi2
         pgNum=self.cursor[self.PAGE]
+        itName = self.getKeyFromPos()
+        itVal = self.getPageItemValue(pgNum,itName)
         if pgNum==1:#nav
-            print("Program Change", self.getKeyFromPos()); 
+            if itName=="board":
+                midi1.send(ProgramChange(itVal))
+            if itName=="snapshot":
+                midi2.send(ProgramChange(itVal))
         if pgNum==2:
-            print("Send a specified CC message", self.getKeyFromPos())
+            ccnum = self.getPageItemValue(pgNum,"ccnum")
+            ccval = self.getPageItemValue(pgNum,"ccval")
+            midi1.send(ControlChange(ccnum, ccval))
         if pgNum==3:
             print("Send a CC message to change tempo", self.getKeyFromPos())
         
@@ -547,10 +585,12 @@ class Monitor:
         pg = self.settings.cursor[0]
         item = self.settings.cursor[1]
         ct=0
+        print(self.settings.masterlist[pg].items())
         for key, value in self.settings.masterlist[pg].items():
             self.showKvP(key,value.val,ct,item==ct)
             ct+=1
-            
+        for i in range(ct,4):
+            self.showKvP("","",ct,False)
      
     def showKvP(self, key, val, pos, lit):
         self.keyAreas[pos].text = str(key)
@@ -597,6 +637,8 @@ midi1 = adafruit_midi.MIDI(
     out_channel=9,
 )
 midi2 = adafruit_midi.MIDI(midi_out=usb_midi.ports[1], out_channel=10)
+
+
 
 
 note = 60
@@ -779,12 +821,15 @@ ctrlCt=16  #
 #     ctrlCt+=1
     
 drumPad = AnKeyPad(midi1, ctrlCt, board.A2, drumPadPressed)
-pagerPad = AnKeyPad(midi1, ctrlCt, board.A1, pagerPressed)
+#pagerPad = AnKeyPad(midi1, ctrlCt, board.A1, pagerPressed)
 
-pagerPad.set_notches([36,64,87,110,126],[0,1,2,4,3])
+#pagerPad.set_notches([36,64,87,110,126],[0,1,2,4,3])
+
+joyController = JoyStick(midi1,ctrlCt+1, board.A0, board.A1, board.GP22)
 
 Controlz[ctrlCt] = drumPad
-Controlz[ctrlCt+1] = pagerPad
+Controlz[ctrlCt+1] = joyController
+#Controlz[ctrlCt+1] = pagerPad
 
 
                   
