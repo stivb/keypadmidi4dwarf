@@ -356,18 +356,30 @@ class JoyStick:
         self.switch.pull = Pull.UP
         self.callback = callback
         self.lastChecked = time.monotonic()
+        self.notches = [4,24,64,104,124]
+        self.notchMap = [-2,-1,0,1,2]
         
     def get_voltage(self, voltage):
         return int((voltage * 127) / 65536)
         
     def check(self):
         now = time.monotonic()
-        if (now-self.lastChecked>.2):
-            v = self.get_voltage(self.vAnalog.value)
-            h = self.get_voltage(self.hAnalog.value)
-            b = self.switch.value
-            print (v,h,b)
-            self.lastChecked = now
+        if (now-self.lastChecked<.3): return
+        v = self.get_voltage(self.vAnalog.value)
+        h = self.get_voltage(self.hAnalog.value)
+        b = not self.switch.value
+        nearestV = min(range(len(self.notches)), key=lambda i: abs(self.notches[i]-v))
+        nearestH = min(range(len(self.notches)), key=lambda i: abs(self.notches[i]-h))  
+        #print (v,h,b)
+        #self.lastChecked = now
+        vVal = self.notchMap[nearestV]
+        hVal = self.notchMap[nearestH]
+        if self.callback!=None:
+            if (abs(vVal)+abs(hVal))>0 or b:
+                self.lastChecked = now
+                self.callback(self.notchMap[nearestV],self.notchMap[nearestH],b, v,h)
+                
+
             
         
         
@@ -650,6 +662,27 @@ def drumBtnPressed(ctrlId,when):
     #drumNotesPlayed.append(notewhen)
     print ("Note played from button ", ctrlId)
     
+def joyStickAction(degreeV,degreeH,actioned,v,h):
+    if actioned:
+        print ("actioned")
+        return
+    if degreeV==0 and degreeH==0: return  
+    retval = ""    
+    if degreeV !=0: retval += "Vertical "
+    if degreeV<0: retval += " Decrease "
+    if degreeV>0: retval += " Increase "
+    if abs(degreeV)>1: retval+=" Bigly "
+    if degreeH !=0: retval += "Horizontal "
+    if degreeH<0: retval += " Decrease "
+    if degreeH>0: retval += " Increase "
+    if abs(degreeH)>1: retval+=" Bigly "
+    print (retval)
+    print (v,h)
+    
+    
+        
+                   
+                   
 def doNotesOff():
     global drumNotesPlayed
     global Controlz
@@ -825,7 +858,7 @@ drumPad = AnKeyPad(midi1, ctrlCt, board.A2, drumPadPressed)
 
 #pagerPad.set_notches([36,64,87,110,126],[0,1,2,4,3])
 
-joyController = JoyStick(midi1,ctrlCt+1, board.A0, board.A1, board.GP22)
+joyController = JoyStick(midi1,ctrlCt+1, board.A1, board.A0, board.GP22, joyStickAction)
 
 Controlz[ctrlCt] = drumPad
 Controlz[ctrlCt+1] = joyController
