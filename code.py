@@ -50,7 +50,7 @@
 #might try different mux however
 #########################################
 
-
+import json
 import board
 import busio
 
@@ -294,18 +294,6 @@ class FootSwitch:
     def enactState(self):
         self.midi.send(nId, 1+self.state*96)
 
-class MatrixKeypad:
-    def __init__(self, midi, nId, rows, cols, callback=None):
-        self.rows = rows
-        self.cols = cols
-        self.nId = nId
-        self.midi = midi
-        self.callback = callback
-        self.row_pins = [Pin(pin_name, mode=Pin.OUT) for pin_name in rows]
-        self.col_pins = [Pin(pin_name, mode=Pin.IN, pull=Pin.PULL_DOWN) for pin_name in cols]
-        for row in range(0,4):
-            for col in range(0,4):
-                row_pins[row].low()
                 
 class AnKeyPad:
     def __init__(self, midi, nId, pin, callback=None):
@@ -355,7 +343,7 @@ class JoyStick:
         self.switch.direction = Direction.INPUT
         self.switch.pull = Pull.UP
         self.callback = callback
-        self.lastChecked = time.monotonic()
+        self.lastMoved = time.monotonic()
         self.notches = [4,24,64,104,124]
         self.notchMap = [-2,-1,0,1,2]
         
@@ -364,20 +352,32 @@ class JoyStick:
         
     def check(self):
         now = time.monotonic()
-        if (now-self.lastChecked<.3): return
+        
         v = self.get_voltage(self.vAnalog.value)
         h = self.get_voltage(self.hAnalog.value)
         b = not self.switch.value
+        
+        #print(b,self.lastMoved)
+        
+        if b and (now -self.lastMoved)> .2: 
+            self.lastMoved = now
+            self.callback(0,0,b)
+            return
+        
+        if (v==0 and h==0): return
+        
+        if h==0:
+            if (now-self.lastMoved)<.5: return
+        else:
+            if (now-self.lastMoved)<.2: return
+        
         nearestV = min(range(len(self.notches)), key=lambda i: abs(self.notches[i]-v))
         nearestH = min(range(len(self.notches)), key=lambda i: abs(self.notches[i]-h))  
-        #print (v,h,b)
-        #self.lastChecked = now
-        vVal = self.notchMap[nearestV]
-        hVal = self.notchMap[nearestH]
+   
+   
         if self.callback!=None:
-            if (abs(vVal)+abs(hVal))>0 or b:
-                self.lastChecked = now
-                self.callback(self.notchMap[nearestV],self.notchMap[nearestH],b, v,h)
+                self.lastMoved = now
+                self.callback(self.notchMap[nearestV],self.notchMap[nearestH],b)
                 
 
             
@@ -437,144 +437,149 @@ class NoteBasher:
         self.noteQueue = [x for x in self.noteQueue if x not in noteOffs]
 
 
-class Setting:
-    def __init__(self, val, min, max, incAmt):
-        self.val = val
-        self.min = min
-        self.max = max
-        self.incAmt = incAmt
-        
-    def inc(self):
-        self.val = min(self.val+self.incAmt,self.max)
-        
-    def dec(self):
-        self.val = max(self.val-self.incAmt,self.min)
         
 
 class Settings:
-    global monitor
-    def __init__(self):
-        self.PAGE=0
-        self.ITEM=1
-        self.board=0
-        self.snapshot=0
-        self.masterkey = dict(channel=0, nav=1,cc=2,tempo=3)
-        self.midiChn = dict(channel = Setting(0,0,15,1))
-        self.nav = dict(snapshot = Setting(0,0,15,1),board = Setting(0,0,15,1))
-        self.cc =  dict( ccnum = Setting(0,0,127,1), ccval = Setting(0,0,127,1))
-        self.tempo = dict(bpb = Setting(1,1,8,1), bpm = Setting(120,80,160,5) )
-        self.masterlist = [self.midiChn,self.nav,self.cc, self.tempo]
-        self.cursor = [0,0]
-        print(self.nav.keys())
+    def __init__(self, jsonFile, funcs, monitor):
+        self.pageCursor=0
+        self.itemCursor=0
+        self.monitor = monitor
+        self.funcs = funcs
+        with open(jsonFile) as json_file:
+            self.data = json.load(json_file)
+        self.monitor.printout(self.prettyPage())
         
-    def nextPage(self):
-        if self.cursor[self.PAGE]==len(self.masterlist):
-            self.cursor[self.PAGE]=0
-        else: self.cursor[self.PAGE]+=1
+    def handleJoyStick(self, vert,horz, click):
+        if click:
+            self.runFunction()
+            return
+        if vert<0: self.nextItem()
+        if vert>0:  self.prevItem()
+        if horz>0:self.changeUp(horz==2)    
+        if horz<0:self.changeDown(horz==-2)
         
-    def nextItemInPage(self):
-        if self.cursor[self.ITEM]==len(self.masterlist[self.cursor[self.PAGE]])-1:
-            self.cursor[self.ITEM]=0
-        else: self.cursor[self.ITEM]+=1
         
     def nextItem(self):
-        if self.cursor[self.ITEM]==len(self.masterlist[self.cursor[self.PAGE]])-1:  #if at end of page
-            if self.cursor[self.PAGE]==len(self.masterlist)-1: #if at end of sequence of pages too
-                self.cursor[self.PAGE]=0
-                self.cursor[self.ITEM]=0
-            else:
-                self.cursor[self.PAGE]+=1
-                self.cursor[self.ITEM]=0
-        else:
-            self.cursor[self.ITEM]+=1
-        monitor.refresh()
-            
+        print("next item")
+        self.itemCursor += 1
+        if self.pageSettingsCt() == self.itemCursor:
+            self.pageCursor += 1
+            self.itemCursor = 0
+            if self.pageCt() == self.pageCursor:
+                self.pageCursor = 0
+        self.monitor.printout(self.prettyPage())
+        
     def prevItem(self):
-        if self.cursor[self.ITEM]==0:  #if at beginning of page
-            if self.cursor[self.PAGE]==0: #if at beginning of sequence of pages too
-                self.cursor[self.PAGE]=len(self.masterlist)-1
-                self.cursor[self.ITEM]=len(self.masterlist[self.cursor[self.PAGE]])-1
-            else:
-                self.cursor[self.PAGE]-=1
-                self.cursor[self.ITEM]=len(self.masterlist[self.cursor[self.PAGE]])-1
-        else:
-            self.cursor[self.ITEM]-=1
-        monitor.refresh()
-    
-    def getPages(self):
-        return self.masterkey.keys
-    
-    def getPageItems(self,pgNum):
-        return self.masterlist[pgNum].keys
-    
-    def getPageItemValue(self,pgNum,itemName):
-        return self.masterlist[pgNum][itemName].val
-    
-    def setPageItemValue(self,pgNum,itemName,itemValue):
-        self.masterlist[pgNum][itemName].val = itemValue
+        print("prev item")
+        self.itemCursor -= 1
+        if self.itemCursor <0:
+            self.pageCursor -= 1
+            self.itemCursor = 0
+            if self.pageCursor<0:
+                self.pageCursor = self.pageCt()-1
+        self.monitor.printout(self.prettyPage())
+
+    def goPage(self,num):
+        self.pageCursor = num
+        self.itemCursor = 0
+        self.monitor.printout(self.prettyPage())
+
+    def pageSettingsCt(self):
+        return len(self.data["pages"][self.pageCursor]["settings"])
+
+    def pageCt(self):
+        return (len(self.data["pages"]))
+
+    def getKvp(self,pgItemNum):
+        key = self.data["pages"][self.pageCursor]["settings"][pgItemNum]["key"]
+        value = self.data["pages"][self.pageCursor]["settings"][pgItemNum]["value"]
+        return key + "|" + str(value)
+
+
+    def runFunction(self):
+        fn = self.data["pages"][self.pageCursor]["settings"][self.itemCursor]["function"]
+        val = self.data["pages"][self.pageCursor]["settings"][self.itemCursor]["value"]
+        if fn=="parent":
+            fn = self.data["pages"][self.pageCursor]["function"]
+            allVals = ""
+            for item in self.data["pages"][self.pageCursor]["settings"]:
+                allVals += str(item["value"]) + ","
+            funcs.run_func("self." + fn + "('" + allVals.rstrip(',') + "')")
+        else: funcs.run_func("self." + fn + "(" + str(val) + ")")
+
+
+    def prettyPage(self):
+        retval = ""
+        for i in range(self.pageSettingsCt()):
+            line = ""
+            if self.itemCursor==i:line+="*"
+            line+=self.getKvp(i) + "\n"
+            retval+=line
+        return retval
+
+    def changeUp(self, bigly):
+        self.changeBy(self.getAmt(bigly))
+
+    def changeDown(self, bigly):
+        self.changeBy(self.getAmt(bigly)*-1)
+
+    def getAmt(self, bigly):
+        if bigly: return self.data["pages"][self.pageCursor]["settings"][self.itemCursor]["bigInc"]
+        else: return self.data["pages"][self.pageCursor]["settings"][self.itemCursor]["inc"]
+
+    def changeBy(self,amt):
+        itemMax = self.data["pages"][self.pageCursor]["settings"][self.itemCursor]["max"]
+        itemMin = self.data["pages"][self.pageCursor]["settings"][self.itemCursor]["min"]
+        currVal = self.data["pages"][self.pageCursor]["settings"][self.itemCursor]["value"]
+        newVal =max(min (currVal + amt,itemMax),itemMin)
+        self.data["pages"][self.pageCursor]["settings"][self.itemCursor]["value"] =newVal
+        self.monitor.printout(self.prettyPage())
         
-    def findPage(self,itemName):
-        for i in range(len(self.masterlist)):
-            if itemName in self.masterlist[i]:
-                return i
-        return -1
+class Functions:
     
-    def getItemValue(self,itemName):
-        pgNum = findPage(itemName)
-        if pgNum>-1:
-            return getPageItemValue(pgNum,itemName)
-        return "not found"
+    def __init__(self):
+        self.callCount=0
+        self.allowed_funcs =  {"self.SettingsChooseChannel": self.SettingsChooseChannel,
+                         "self.SettingsGoBoardSnapshot":self.SettingsGoBoardSnapshot,
+                         "self.SettingsSendCCNumVal":self.SettingsSendCCNumVal,
+                         "self.SettingsBpm":self.SettingsBpm,
+                         "self.SettingsBpb":self.SettingsBpb,
+                         "self.SettingsSetBoardChannel":self.SettingsSetBoardChannel,
+                         "self.SettingsSetSnapshotChannel":self.SettingsSetSnapshotChannel
+                         } 
+        
+        
+    def run_func(self, input_string):
+        print(input_string)
+        eval(input_string, {"self": self})
+
     
-    def setItemValue(self,itemName):
-        pgNum = findPage(itemName)
-        if pgNum>-1:
-            self.masterlist[findPage(itemName)][itemName].val = itemValue
-            
-    def incrementCurrItem(self):
-        self.changeVal(1)
+    def SettingsChooseChannel(self, iput):
+        print("Not Yet Implemented", iput)
         
-    def decrementCurrItem(self):
-        self.changeVal(-1)
+    def SettingsGoBoardSnapshot(self, iput):
+        print("Not Yet Implemented", iput)
         
-    def changeVal(self, amt):
-        pageDict = self.masterlist[self.cursor[self.PAGE]]
-        key = self.getKeyFromPos()
-        if amt>0:pageDict[key].inc()
-        else:pageDict[key].dec()
-        monitor.refresh()
+    def SettingsSendCCNumVal(self, iput):
+        print("Not Yet Implemented", iput)
         
-    def getKeyFromPos(self):
-        pgNum=self.cursor[self.PAGE]
-        itNum = self.cursor[self.ITEM]
-        pageDict = self.masterlist[pgNum]
-        keys = list(pageDict.keys())
-        key = keys[itNum]
-        return key
-    
-    def enactState(self):
-        global midi1,midi2
-        pgNum=self.cursor[self.PAGE]
-        itName = self.getKeyFromPos()
-        itVal = self.getPageItemValue(pgNum,itName)
-        if pgNum==1:#nav
-            if itName=="board":
-                midi1.send(ProgramChange(itVal))
-            if itName=="snapshot":
-                midi2.send(ProgramChange(itVal))
-        if pgNum==2:
-            ccnum = self.getPageItemValue(pgNum,"ccnum")
-            ccval = self.getPageItemValue(pgNum,"ccval")
-            midi1.send(ControlChange(ccnum, ccval))
-        if pgNum==3:
-            print("Send a CC message to change tempo", self.getKeyFromPos())
+    def SettingsBpm(self, iput):
+        print("Not Yet Implemented", iput)
         
+    def SettingsBpb(self, iput):
+        print("Not Yet Implemented", iput)
         
+    def SettingsSetBoardChannel(self, iput):
+        print("Not Yet Implemented", iput)
         
+    def SettingsSetSnapshotChannel(self, iput):
+        print("Not Yet Implemented", iput)
+        
+     
 
 class Monitor:
     
-    def __init__(self, dizplay, settings):
-        self.settings = settings
+    def __init__(self, dizplay):
         self.display = dizplay
         self.splash = displayio.Group()
         self.display.show(self.splash)
@@ -582,44 +587,52 @@ class Monitor:
         self.status = "Start"
         self.keyAreas = []
         self.valAreas = []
+        self.highlight = 0xFFFFFF
+        self.dimmed = 0x999999
 
-        self.addKvP("", "", 0, 0xFFFFFF)
-        self.addKvP("", "", 1, 0x999999)
-        self.addKvP("", "", 2, 0x999999)
-        self.addKvP("", "", 3, 0x999999)
-        self.addKvP("NEXT", "", 4, 0x999999)
-        self.addKvP(self.status, "5", 5, 0xFF0000)
+        self.addKvP("", "", 0, self.highlight)
+        self.addKvP("", "", 1, self.dimmed)
+        self.addKvP("", "", 2, self.dimmed)
+        self.addKvP("", "", 3, self.dimmed)
+        self.addKvP("NEXT", "", 4, self.dimmed)
+        self.addKvP(self.status, "5", 5, self.dimmed)
         print(self.keyAreas)
         print(self.valAreas)
         
         
-    def refresh(self):
-        pg = self.settings.cursor[0]
-        item = self.settings.cursor[1]
+    def printout(self,datastr):
+        retval = ""
+        lines = datastr.split("\n")
+        lines = [x for x in lines if x]
         ct=0
-        print(self.settings.masterlist[pg].items())
-        for key, value in self.settings.masterlist[pg].items():
-            self.showKvP(key,value.val,ct,item==ct)
+        for line in lines:
+            self.printLine(line,ct)
             ct+=1
         for i in range(ct,4):
-            self.showKvP("","",ct,False)
-     
+            self.printLine("",i)
+
+    def printLine(self,line,pos):
+        if line=="":
+            self.showKvP("","",pos,False)
+            return
+        key, value = line.split('|')
+        if key[0] == "*":  self.showKvP(key[1:],value,pos,True)
+        else: self.showKvP(key,value,pos,False)
+        
     def showKvP(self, key, val, pos, lit):
         self.keyAreas[pos].text = str(key)
         self.valAreas[pos].text = str(val)
         if lit:
-            self.keyAreas[pos].color=0xFFFFFF
-            self.valAreas[pos].color=0xFFFFFF
+            self.keyAreas[pos].color=self.highlight
+            self.valAreas[pos].color=self.highlight
         else:
-            self.keyAreas[pos].color=0x999999
-            self.valAreas[pos].color=0x999999
+            self.keyAreas[pos].color=self.dimmed
+            self.valAreas[pos].color=self.dimmed
         
     
     def statusUpdate(self, txt):
         self.status= txt
         self.valAreas[5].text = "\n".join(wrap_text_to_lines(self.status, 20))
-        self.settings.nextItem()
-        self.refresh()
         
     def statusAppend(self, txt):
         self.status= self.status + txt
@@ -631,7 +644,7 @@ class Monitor:
         self.keyAreas.append(key_area)
         key_group.append(key_area)  # Subgroup for text scaling
         self.splash.append(key_group)
-        val_group = displayio.Group(scale=2, x=180, y=10+(pos*40))
+        val_group = displayio.Group(scale=2, x=210, y=10+(pos*40))
         val_area = label.Label(terminalio.FONT, text=defValue, color=col)
         self.valAreas.append(val_area)
         val_group.append(val_area)  # Subgroup for text scaling
@@ -662,26 +675,11 @@ def drumBtnPressed(ctrlId,when):
     #drumNotesPlayed.append(notewhen)
     print ("Note played from button ", ctrlId)
     
-def joyStickAction(degreeV,degreeH,actioned,v,h):
-    if actioned:
-        print ("actioned")
-        return
-    if degreeV==0 and degreeH==0: return  
-    retval = ""    
-    if degreeV !=0: retval += "Vertical "
-    if degreeV<0: retval += " Decrease "
-    if degreeV>0: retval += " Increase "
-    if abs(degreeV)>1: retval+=" Bigly "
-    if degreeH !=0: retval += "Horizontal "
-    if degreeH<0: retval += " Decrease "
-    if degreeH>0: retval += " Increase "
-    if abs(degreeH)>1: retval+=" Bigly "
-    print (retval)
-    print (v,h)
+def joyStickAction(degreeV,degreeH,actioned):
+    global settings 
+    settings.handleJoyStick(degreeV,degreeH,actioned)
     
-    
-        
-                   
+                  
                    
 def doNotesOff():
     global drumNotesPlayed
@@ -866,7 +864,7 @@ Controlz[ctrlCt+1] = joyController
 
 
                   
-settings = Settings()
+
 
 
 displayio.release_displays()
@@ -877,7 +875,10 @@ spi_clk = board.GP10
 spi = busio.SPI(spi_clk, spi_mosi)
 display_bus = displayio.FourWire(spi, command=tft_dc, chip_select=tft_cs)
 display = ST7789(display_bus, width=240, height=240, rowstart=80, rotation=90)
-monitor = Monitor(display, settings)
+monitor = Monitor(display)
+funcs = Functions()
+
+settings = Settings("settings.json",funcs,monitor)
 
 
 # bars button
