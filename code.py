@@ -79,6 +79,8 @@ keys = keybow.keys
 
 drumNotesPlayed = []
 
+transmissionOn=True
+
 debugging=False
 
 #spi = busio.SPI(clock=board.GP10, MOSI=board.GP11)
@@ -389,8 +391,13 @@ class MidiReader:
     
     global monitor
     
+    
     def __init__(self, midi):      
         self.midi = midi
+        self.line = ""
+        self.text = ""
+        self.transmissionOn=False
+        print("Reading from ", self.midi.in_channel)
           
     def displayMidiMessage(self,msg_in):        
         if msg_in is None:
@@ -398,6 +405,18 @@ class MidiReader:
         if isinstance(msg_in, ProgramChange):
             monitor.update(str(msg_in.patch))
             self.showMidiNum(msg_in.patch)
+        
+        if isinstance(msg_in, NoteOn):
+            self.line += chr(msg_in.velocity)
+            if msg_in.velocity==60:
+                self.transmissionOn=True
+            if msg_in.velocity==62:
+                self.transmissionOn=False
+            if msg_in.velocity==10:
+                print(self.txt)
+                self.text += self.line
+                self.line = ""
+            
       
 
 
@@ -447,7 +466,7 @@ class Settings:
         self.funcs = funcs
         with open(jsonFile) as json_file:
             self.data = json.load(json_file)
-        self.monitor.printout(self.prettyPage())
+        self.monitor.printout(self.isSettingsPage(), self.prettyPage())
         
     def handleJoyStick(self, vert,horz, click):
         if click:
@@ -467,7 +486,7 @@ class Settings:
             self.itemCursor = 0
             if self.pageCt() == self.pageCursor:
                 self.pageCursor = 0
-        self.monitor.printout(self.prettyPage())
+        self.monitor.printout(self.isSettingsPage(), self.prettyPage())
         
     def prevItem(self):
         print("prev item")
@@ -477,39 +496,64 @@ class Settings:
             self.itemCursor = 0
             if self.pageCursor<0:
                 self.pageCursor = self.pageCt()-1
-        self.monitor.printout(self.prettyPage())
+        self.monitor.printout(self.isSettingsPage(), self.prettyPage())
 
     def goPage(self,num):
         self.pageCursor = num
         self.itemCursor = 0
-        self.monitor.printout(self.prettyPage())
+        self.monitor.printout(self.isSettingsPage(), self.prettyPage())
 
     def pageSettingsCt(self):
-        return len(self.data["pages"][self.pageCursor]["settings"])
+        page = self.data["pages"][self.pageCursor]
+        if not "settings" in page:
+            return 0
+        return len(page["settings"])
 
     def pageCt(self):
         return (len(self.data["pages"]))
 
     def getKvp(self,pgItemNum):
-        key = self.data["pages"][self.pageCursor]["settings"][pgItemNum]["key"]
-        value = self.data["pages"][self.pageCursor]["settings"][pgItemNum]["value"]
+        item = self.data["pages"][self.pageCursor]["settings"][pgItemNum]
+        key = item["key"]
+        value = item["value"]
         return key + "|" + str(value)
+    
+    def getContent(self,pgItemNum):
+        item = self.data["pages"][self.pageCursor]["content"][pgItemNum]
+        return item["value"]
 
 
     def runFunction(self):
-        fn = self.data["pages"][self.pageCursor]["settings"][self.itemCursor]["function"]
-        val = self.data["pages"][self.pageCursor]["settings"][self.itemCursor]["value"]
+        page = self.data["pages"][self.pageCursor]
+        item = self.data["pages"][self.pageCursor]["settings"][self.itemCursor]        
+        fn =  item["function"]
+        val = item["value"]
         if fn=="parent":
-            fn = self.data["pages"][self.pageCursor]["function"]
+            fn = page["function"]
             allVals = ""
-            for item in self.data["pages"][self.pageCursor]["settings"]:
+            for item in page["settings"]:
                 allVals += str(item["value"]) + ","
             funcs.run_func("self." + fn + "('" + allVals.rstrip(',') + "')")
         else: funcs.run_func("self." + fn + "(" + str(val) + ")")
+        
+    def isContentPage(self):
+        page = self.data["pages"][self.pageCursor]
+        if "content" in page:
+            return True
+        return False
+    
+    def isSettingsPage(self):
+        page = self.data["pages"][self.pageCursor]
+        if "settings" in page:
+            return True
+        return False
 
 
     def prettyPage(self):
         retval = ""
+        if self.isContentPage():
+            return self.getContent(0)
+            
         for i in range(self.pageSettingsCt()):
             line = ""
             if self.itemCursor==i:line+="*"
@@ -518,22 +562,30 @@ class Settings:
         return retval
 
     def changeUp(self, bigly):
+        if self.isContentPage():return
         self.changeBy(self.getAmt(bigly))
 
     def changeDown(self, bigly):
+        if self.isContentPage():return
         self.changeBy(self.getAmt(bigly)*-1)
 
     def getAmt(self, bigly):
-        if bigly: return self.data["pages"][self.pageCursor]["settings"][self.itemCursor]["bigInc"]
-        else: return self.data["pages"][self.pageCursor]["settings"][self.itemCursor]["inc"]
+        if self.isContentPage():return
+        item = self.data["pages"][self.pageCursor]["settings"][self.itemCursor]
+        if bigly: return item["bigInc"]
+        else: return item["inc"]
 
     def changeBy(self,amt):
-        itemMax = self.data["pages"][self.pageCursor]["settings"][self.itemCursor]["max"]
-        itemMin = self.data["pages"][self.pageCursor]["settings"][self.itemCursor]["min"]
-        currVal = self.data["pages"][self.pageCursor]["settings"][self.itemCursor]["value"]
+        if self.isContentPage():return
+        item = self.data["pages"][self.pageCursor]["settings"][self.itemCursor]
+        if not "max" in item and "min" in item and "value" in item:
+            return
+        itemMax = item["max"]
+        itemMin = item["min"]
+        currVal = item["value"]
         newVal =max(min (currVal + amt,itemMax),itemMin)
-        self.data["pages"][self.pageCursor]["settings"][self.itemCursor]["value"] =newVal
-        self.monitor.printout(self.prettyPage())
+        item["value"] =newVal
+        self.monitor.printout(self.isSettingsPage(), self.prettyPage())
         
 class Functions:
     
@@ -579,28 +631,54 @@ class Functions:
 
 class Monitor:
     
+
+    
     def __init__(self, dizplay):
         self.display = dizplay
-        self.splash = displayio.Group()
-        self.display.show(self.splash)
+        self.kvpScreen = displayio.Group()
+        self.txtScreen = displayio.Group()
         self.buffer = ""
         self.status = "Start"
         self.keyAreas = []
         self.valAreas = []
         self.highlight = 0xFFFFFF
         self.dimmed = 0x999999
-
+        self.setupSettingsScreen()
+        self.setupContentScreen()
+        self.display.show(self.kvpScreen)
+        
+        
+    def setupContentScreen(self):
+        self.txt_group = displayio.Group(scale=1, x=10, y=10)
+        self.txt_area = label.Label(terminalio.FONT, text="", color=self.highlight)
+        self.txt_group.append(self.txt_area)
+        self.txtScreen.append(self.txt_group)
+    
+        
+    def setupSettingsScreen(self):        
         self.addKvP("", "", 0, self.highlight)
         self.addKvP("", "", 1, self.dimmed)
         self.addKvP("", "", 2, self.dimmed)
         self.addKvP("", "", 3, self.dimmed)
         self.addKvP("NEXT", "", 4, self.dimmed)
         self.addKvP(self.status, "5", 5, self.dimmed)
-        print(self.keyAreas)
-        print(self.valAreas)
         
+    def changeScreenIfNecc(self, newScreen):
+        if (self.display.root_group!=newScreen):
+            self.display.show(newScreen)
+    
         
-    def printout(self,datastr):
+    
+   
+        
+    #this formats a sequence of kvps from key|value lists    
+    def printout(self,isSettingsPage, datastr):
+        if not isSettingsPage:
+            self.changeScreenIfNecc(self.txtScreen)
+            self.txt_area.text = datastr
+            print (datastr)
+            return
+        self.changeScreenIfNecc(self.kvpScreen)
         retval = ""
         lines = datastr.split("\n")
         lines = [x for x in lines if x]
@@ -610,6 +688,10 @@ class Monitor:
             ct+=1
         for i in range(ct,4):
             self.printLine("",i)
+            
+    def printContent(self, content):
+        print(content)
+        
 
     def printLine(self,line,pos):
         if line=="":
@@ -639,16 +721,18 @@ class Monitor:
         self.valAreas[5].text = "\n".join(wrap_text_to_lines(self.status, 20))
         
     def addKvP(self, key, defValue, pos,col):
+        #LEFT column adding KEY placeholder
         key_group = displayio.Group(scale=2, x=0, y=10+(pos*40))
         key_area = label.Label(terminalio.FONT, text=key, color=col)
         self.keyAreas.append(key_area)
         key_group.append(key_area)  # Subgroup for text scaling
-        self.splash.append(key_group)
+        self.kvpScreen.append(key_group)
+        #RIGHT column adding VALUE placeholder
         val_group = displayio.Group(scale=2, x=210, y=10+(pos*40))
         val_area = label.Label(terminalio.FONT, text=defValue, color=col)
         self.valAreas.append(val_area)
         val_group.append(val_area)  # Subgroup for text scaling
-        self.splash.append(val_group)
+        self.kvpScreen.append(val_group)
         
         
 
@@ -658,7 +742,7 @@ class Monitor:
 midi1 = adafruit_midi.MIDI(
     midi_in=usb_midi.ports[0],
     midi_out=usb_midi.ports[1],
-    in_channel=0,
+    in_channel=15,
     out_channel=9,
 )
 midi2 = adafruit_midi.MIDI(midi_out=usb_midi.ports[1], out_channel=10)
@@ -912,13 +996,12 @@ def get_voltg(raw):
 
 while True:
     
-    keybow.update()
-    
-    for i in range(0,len(Controlz)):
-            Controlz[i].check()
-     
-    
-    noteBasher.tidyUp()
+    if not midiReader.transmissionOn:
+        keybow.update()        
+        for i in range(0,len(Controlz)):
+                Controlz[i].check()
+        noteBasher.tidyUp()
+        
     midiReader.displayMidiMessage(midi1.receive())
     
 
