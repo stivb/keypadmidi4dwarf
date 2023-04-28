@@ -380,11 +380,6 @@ class JoyStick:
         if self.callback!=None:
                 self.lastMoved = now
                 self.callback(self.notchMap[nearestV],self.notchMap[nearestH],b)
-                
-
-            
-        
-        
 
 
 class MidiReader:
@@ -467,6 +462,7 @@ class Settings:
         with open(jsonFile) as json_file:
             self.data = json.load(json_file)
         self.monitor.printout(self.isSettingsPage(), self.prettyPage())
+        self.addContentPage("title", "one\ntwo\nthree")
         
     def handleJoyStick(self, vert,horz, click):
         if click:
@@ -587,6 +583,19 @@ class Settings:
         item["value"] =newVal
         self.monitor.printout(self.isSettingsPage(), self.prettyPage())
         
+    def addContentPage(self, title, content):
+        item = {}
+        setting = {}        
+        setting["key"] = title
+        setting["value"] = content
+        item["content"] = [setting]
+        item["title"] = "Lyrics"
+        item["function"] = "lyrics"
+        self.data["pages"].append(item)
+        print(self.data)
+        
+        
+        
 class Functions:
     
     def __init__(self):
@@ -667,10 +676,6 @@ class Monitor:
         if (self.display.root_group!=newScreen):
             self.display.show(newScreen)
     
-        
-    
-   
-        
     #this formats a sequence of kvps from key|value lists    
     def printout(self,isSettingsPage, datastr):
         if not isSettingsPage:
